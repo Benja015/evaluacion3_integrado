@@ -2,7 +2,7 @@ import json, uuid
 from datetime import datetime, date, time, timedelta
 from functools import wraps
 from django.shortcuts import render, get_object_or_404, redirect
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, Http404
 from django.db import transaction, IntegrityError, OperationalError
 from django.db.models import F
 from django.core.exceptions import ValidationError
@@ -28,28 +28,41 @@ def access(s): return {'servicios':True,'tienda':True,'ra':s.probadores_demo,'mo
 def contact(s): return {'nombre':s.nombre,'direccionPublica':s.direccion,'telefonoPublico':s.telefono,'correoPublico':s.correo}
 def salon(slug): return get_object_or_404(Salon, slug=slug)
 
-@require_GET
-def info(request,slug):
-    s=salon(slug)
-    return JsonResponse({**contact(s),'apertura':s.apertura,'cierre':s.cierre,'acceso':access(s),'servicios':list(s.servicio_set.filter(activo=True).values('id','nombre','precio','duracion'))})
-@require_GET
-def acceso(request,slug): return JsonResponse(access(salon(slug)))
-@require_GET
-def productos(request,slug):
-    return JsonResponse(list(salon(slug).producto_set.filter(activo=True).values('id','nombre','descripcion','precio','stock','categoria')),safe=False)
-
 def api_errors(fn):
     @wraps(fn)
     def wrapped(*args,**kwargs):
         try: return fn(*args,**kwargs)
+        except Http404: return JsonResponse({'error':'No se encontró el salón, servicio o producto solicitado.'},status=404)
         except (ValueError,TypeError,KeyError,ValidationError,OverflowError): return JsonResponse({'error':'Revisa los campos: nombre, contacto, fecha y selección válidos.'},status=400)
         except (IntegrityError,OperationalError): return JsonResponse({'error':'La disponibilidad cambió. Actualiza los horarios o vuelve a intentar.'},status=409)
     return wrapped
+
+
+@require_GET
+@api_errors
+def info(request,slug):
+    s=salon(slug)
+    return JsonResponse({**contact(s),'apertura':s.apertura,'cierre':s.cierre,'acceso':access(s),'servicios':list(s.servicio_set.filter(activo=True).values('id','nombre','precio','duracion'))})
+@require_GET
+@api_errors
+def acceso(request,slug): return JsonResponse(access(salon(slug)))
+@require_GET
+@api_errors
+def productos(request,slug):
+    return JsonResponse(list(salon(slug).producto_set.filter(activo=True).values('id','nombre','descripcion','precio','stock','categoria')),safe=False)
+
 
 def text(data,key,limit):
     value=data.get(key)
     if not isinstance(value,str) or not 1<=len(value.strip())<=limit: raise ValueError(key)
     return value.strip()
+def positive_id(value):
+    if type(value) is int and 0 < value <= 2147483647: return value
+    if isinstance(value, str) and value.isascii() and value.isdigit() and 0 < len(value) <= 10:
+        number = int(value)
+        if 0 < number <= 2147483647: return number
+    raise ValueError('Identificador inválido')
+
 def payload(request):
     data=json.loads(request.body)
     if not isinstance(data,dict): raise ValueError()
@@ -70,7 +83,7 @@ def slots(s,service,day):
 @require_GET
 @api_errors
 def horarios(request,slug):
-    s=salon(slug);service=get_object_or_404(Servicio,pk=int(request.GET['servicio']),salon=s,activo=True)
+    s=salon(slug);service=get_object_or_404(Servicio,pk=positive_id(request.GET['servicio']),salon=s,activo=True)
     return JsonResponse({'horarios':slots(s,service,date.fromisoformat(request.GET['fecha']))})
 
 def reserva_response(r):
@@ -81,7 +94,7 @@ def reserva_response(r):
 @api_errors
 def reservas(request,slug):
     data=payload(request);sid=uuid.UUID(text(data,'solicitudId',36));nombre=text(data,'nombre',120);correo=text(data,'correo',254);validate_email(correo);telefono=text(data,'telefono',40)
-    day=date.fromisoformat(text(data,'fecha',10));hour=text(data,'hora',5);service_id=int(data['servicio_id'])
+    day=date.fromisoformat(text(data,'fecha',10));hour=text(data,'hora',5);service_id=positive_id(data['servicio_id'])
     with transaction.atomic():
         s=salon(slug)
         # First write serializes public bookings on SQLite; row lock on PostgreSQL.
@@ -107,7 +120,7 @@ def pedidos(request,slug):
     items=[];seen=set()
     for item in raw:
         if not isinstance(item,dict): raise ValueError()
-        pid=int(item['id']);qty=item['cantidad']
+        pid=positive_id(item['id']);qty=item['cantidad']
         if type(qty) is not int or not 1<=qty<=20 or pid in seen: raise ValueError()
         seen.add(pid);items.append((pid,qty))
     with transaction.atomic():

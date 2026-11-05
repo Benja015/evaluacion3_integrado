@@ -14,7 +14,7 @@ class Salon(models.Model):
     probadores_demo = models.BooleanField(default=True)
     revision = models.PositiveIntegerField(default=0, editable=False)
     def clean(self):
-        if self.cierre <= self.apertura: raise ValidationError('El cierre debe ser posterior a la apertura.')
+        if self.apertura is not None and self.cierre is not None and self.cierre <= self.apertura: raise ValidationError('El cierre debe ser posterior a la apertura.')
     def __str__(self): return self.nombre
 
 class Servicio(models.Model):

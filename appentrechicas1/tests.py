@@ -51,3 +51,49 @@ class IntegrationTests(TestCase):
         self.client.force_login(user)
         for model in ['salon','servicio','producto','reserva','pedido']:
             self.assertEqual(self.client.get('/admin/appentrechicas1/'+model+'/').status_code,200)
+
+    def test_admin_salon_missing_hours_shows_errors(self):
+        from django.forms import modelform_factory
+        from .models import Salon
+        form=modelform_factory(Salon,fields=['slug','nombre','apertura','cierre'])(data={'slug':'nuevo','nombre':'Nuevo','apertura':'','cierre':'19'})
+        self.assertFalse(form.is_valid())
+        self.assertIn('apertura',form.errors)
+
+    def test_api_missing_resources_return_json(self):
+        for path in ['/api/publico/no-existe','/api/publico/no-existe/acceso','/api/publico/no-existe/productos','/api/publico/demo/horarios?fecha='+self.day+'&servicio=2147483647']:
+            r=self.client.get(path)
+            self.assertEqual(r.status_code,404)
+            self.assertIn('error',r.json())
+
+    def test_ids_are_not_silently_coerced(self):
+        for value in [True,1.9,-1,[],{},'1.0','999999999999999999999999']:
+            data=self.booking();data['servicio_id']=value
+            self.assertEqual(self.post('/api/publico/demo/reservas',data).status_code,400)
+
+    def test_reused_request_with_new_data_is_rejected(self):
+        data=self.booking()
+        self.assertEqual(self.post('/api/publico/demo/reservas',data).status_code,200)
+        data['nombre']='Otra persona'
+        self.assertEqual(self.post('/api/publico/demo/reservas',data).status_code,409)
+        self.assertEqual(Reserva.objects.count(),1)
+
+    def test_product_quantities_and_duplicate_items(self):
+        p=Producto.objects.first()
+        for items in [[{'id':p.pk,'cantidad':0}],[{'id':p.pk,'cantidad':True}],[{'id':p.pk,'cantidad':1},{'id':p.pk,'cantidad':1}],[]]:
+            data={'solicitudId':str(uuid.uuid4()),'nombre':'Demo','telefono':'12345','items':items}
+            self.assertEqual(self.post('/api/publico/demo/pedidos',data).status_code,400)
+        self.assertEqual(Pedido.objects.count(),0)
+
+    def test_admin_theme_and_static_files_exist(self):
+        from django.contrib.staticfiles import finders
+        r=self.client.get('/admin/login/')
+        self.assertContains(r,'entrechicas/css/admin.css')
+        self.assertContains(r,'Tu espacio de belleza y bienestar')
+        for path in ['css/admin.css','assets/imagenes/foto1.png','assets/imagenes/trabajadores.jpeg','assets/videos/video.mp4','assets/imagenes/icono-192.png','assets/imagenes/icono-512.png']:
+            self.assertIsNotNone(finders.find('entrechicas/'+path),path)
+
+    def test_invalid_json_and_inactive_service(self):
+        r=self.client.post('/api/publico/demo/reservas','{',content_type='application/json',HTTP_X_CSRFTOKEN=self.token)
+        self.assertEqual(r.status_code,400)
+        self.service.activo=False;self.service.save()
+        self.assertEqual(self.post('/api/publico/demo/reservas',self.booking()).status_code,404)
